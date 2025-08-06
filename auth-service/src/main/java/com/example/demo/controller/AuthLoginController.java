@@ -1,0 +1,119 @@
+package com.example.demo.controller;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+
+import com.example.demo.config.JwtService;
+import com.example.demo.dto.AuthRequest;
+import com.example.demo.dto.UserResponse;
+import com.example.demo.dto.ValidationResponse;
+
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletResponse;
+
+@RestController
+@RequestMapping("/auth")
+public class AuthLoginController {
+
+    private static final Logger logger = LoggerFactory.getLogger(AuthLoginController.class);
+    private final WebClient webClient;
+    private final JwtService jwtService;
+
+    public AuthLoginController(WebClient.Builder webClientBuilder, JwtService jwtService) {
+        this.webClient = webClientBuilder.build();
+        this.jwtService = jwtService;
+    }
+
+    // ✅ 1. Regular USER login
+    @PostMapping("/login/user")
+    public ResponseEntity<?> userLogin(@RequestBody AuthRequest authRequest, HttpServletResponse response) {
+        return processLogin(authRequest, response, "lb://user-service/user/login", "USER");
+    }
+
+    // ✅ 2. MERCHANT login
+    @PostMapping("/merchant/login")
+    public ResponseEntity<?> merchantLogin(@RequestBody AuthRequest authRequest, HttpServletResponse response) {
+        return processLogin(authRequest, response, "lb://merchant-service/merchant/login", "MERCHANT");
+    }
+
+    // ✅ 3. ADMIN login
+    @PostMapping("/login/admin")
+    public ResponseEntity<?> adminLogin(@RequestBody AuthRequest authRequest, HttpServletResponse response) {
+        return processLogin(authRequest, response, "lb://admin-service/admin/login", "ADMIN");
+    }
+
+    // ✅ 4. Logout (shared for all roles)
+    @PostMapping({"/user/logout", "/merchant/logout", "/admin/logout"})
+    public ResponseEntity<?> logout(HttpServletResponse response) {
+        Cookie cookie = new Cookie("token", null);
+        cookie.setHttpOnly(true);
+        cookie.setSecure(false); // true if using HTTPS
+        cookie.setPath("/");
+        cookie.setMaxAge(0); // Delete immediately
+
+        response.addCookie(cookie);
+        return ResponseEntity.ok("Logged out successfully");
+    }
+
+    // 🔁 Shared login method
+    private ResponseEntity<?> processLogin(AuthRequest authRequest, HttpServletResponse response, String serviceUri, String expectedRole) {
+        logger.info("Login attempt for username: {} as {}", authRequest.getUsername(), expectedRole);
+
+        try {
+            ValidationResponse validationResponse = webClient.post()
+                    .uri(serviceUri)
+                    .bodyValue(authRequest)
+                    .retrieve()
+                    .bodyToMono(ValidationResponse.class)
+                    .block();
+
+            if (validationResponse != null && validationResponse.isValid()) {
+                UserResponse user = validationResponse.getUserResponse();
+
+                if (user == null || user.getUserId() == null || user.getEmail() == null || user.getRole() == null) {
+                    logger.error("Missing required fields: userId={}, email={}, role={}",
+                            user != null ? user.getUserId() : null,
+                            user != null ? user.getEmail() : null,
+                            user != null ? user.getRole() : null);
+
+                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .body("Login failed: Incomplete user details.");
+                }
+
+                if (!user.getRole().equalsIgnoreCase(expectedRole)) {
+                    logger.warn("Role mismatch: expected {}, but got {}", expectedRole, user.getRole());
+                    return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid role for this login path.");
+                }
+
+                String jwtToken = jwtService.generateToken(user.getUserId(), user.getEmail(), user.getRole());
+
+                Cookie cookie = new Cookie("token", jwtToken);
+                cookie.setHttpOnly(true);
+                cookie.setSecure(false); // true if using HTTPS
+                cookie.setPath("/");
+                cookie.setMaxAge(24 * 60 * 60); // ✅ 1 day
+
+                response.addCookie(cookie);
+
+                Map<String, Object> result = new HashMap<>();
+                result.put("message", "Login successful: " + user.getRole().toUpperCase());
+                return ResponseEntity.ok(result);
+
+            } else {
+                logger.warn("Login failed for username: {}", authRequest.getUsername());
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid credentials");
+            }
+
+        } catch (Exception ex) {
+            logger.error("Login error for {}: {}", authRequest.getUsername(), ex.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Login error");
+        }
+    }
+}

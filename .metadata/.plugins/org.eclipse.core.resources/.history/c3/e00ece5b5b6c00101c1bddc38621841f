@@ -1,0 +1,5 @@
+package com.client.config;
+
+public class ClientConfig {
+
+}
