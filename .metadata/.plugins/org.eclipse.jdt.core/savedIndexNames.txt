@@ -261,7 +261,6 @@ INDEX VERSION 1.134+E:\Spring Security\.metadata\.plugins\org.eclipse.jdt.core
 1483713410.index
 819773699.index
 1816320023.index
-1050042363.index
 1472724594.index
 677618540.index
 902392407.index
